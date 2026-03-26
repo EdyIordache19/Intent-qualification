@@ -183,11 +183,76 @@ class QueryParser:
     def print_json(self, json_query):
         print(json.dumps(json_query, indent = 2))
 
+class CompaniesFilter:
+    def __init__(self, df):
+        self.df = df
+
+    # Only drop if the company has specific data AND it's less/more than minimum/maximum
+    # If the company's data is None, we keep it (Missing data robustness)
+    def apply_filters(self, hard_filters):
+        filtered_df = self.df.copy()
+
+        # Filter by Minimum Revenue
+        if hard_filters.get("min_revenue") is not None:
+            filtered_df = filtered_df[
+                filtered_df['revenue'].isna() | (filtered_df['revenue'] >= hard_filters["min_revenue"])
+            ]
+
+        # Filter by Maximum
+        if hard_filters.get("max_employees") is not None:
+            filtered_df = filtered_df[
+                filtered_df['employee_count'].isna() | (filtered_df['employee_count'] <= hard_filters["max_employees"])
+            ]
+
+        # Filter by Minimum Employees
+        if hard_filters.get("min_employees") is not None:
+            filtered_df = filtered_df[
+                filtered_df['employee_count'].isna() | (filtered_df['employee_count'] >= hard_filters["min_employees"])
+            ]
+
+        # Filter by Public/Private Status
+        if hard_filters.get("is_public") is not None:
+            filtered_df = filtered_df[
+                filtered_df['is_public'].isna() | (filtered_df['is_public'] == hard_filters["is_public"])
+            ]
+
+        # Filter by Year Founded After
+        if hard_filters.get("year_founded_after") is not None:
+            filtered_df = filtered_df[
+                filtered_df['year_founded'].isna() | (filtered_df['year_founded'] >= hard_filters["year_founded_after"])
+            ]
+
+        # Filter by Year Founded Before
+        if hard_filters.get("year_founded_before") is not None:
+            filtered_df = filtered_df[
+                filtered_df['year_founded'].isna() | (filtered_df['year_founded'] <= hard_filters["year_founded_before"])
+            ]
+
+
+        # Filter by Location
+        if hard_filters.get("location") is not None:
+            target_loc = str(hard_filters["location"]).lower()
+            # Keep if missing, OR if the target location string is inside the company's address string
+            filtered_df = filtered_df[
+                filtered_df['address'].isna() |
+                filtered_df['address'].astype(str).str.lower().str.contains(target_loc, na=False)
+            ]
+
+        return filtered_df
+
 if __name__ == "__main__":
     parser = QueryParser()
 
     companies = pd.read_json("companies.jsonl", lines=True)
+    filter = CompaniesFilter(companies)
+
     query = input("Enter a prompt to search companies: \n")
 
     json_query = parser.extract_json_from_query(query)
+
+    filtered_companies = filter.apply_filters(json_query["hard_filters"])
+    print(f"Reduced dataset from {len(companies)} to {len(filtered_companies)} companies.")
+
     parser.print_json(json_query)
+
+    filtered_companies.to_json('filtered_companies.json', orient='records', lines=True)
