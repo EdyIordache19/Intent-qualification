@@ -1,0 +1,82 @@
+Phase 1: Query extraction -> Ollama llama3 + RegEx (maybe)
+	Clean the query
+	Prompt engineering for correct extraction -> Chain of Tought (_reasoning field)
+	Clean the final JSON and validate it
+	
+Phase 2: Hard filtering -> Use JSON from llama3 to filter the hard to interpret values and drop anything non-matching
+	
+
+Phase 3: Cosine similarity -> Use embeddings (sentence-transformers, all-MiniLM-L6-v2) to rank the remaining companies; 
+			      Get help from soft filters from ph. 2
+Phase 4: Intent validation -> Ollama to loop through top companies and confirm which are a perfect fit;
+			      Make it multithreaded for performance
+
+
+
+
+class CompaniesFilter:
+    def __init__(self, df):
+        self.df = df
+
+    def apply_filters(self, hard_filters):
+        filtered_df = self.df.copy()
+
+        # Filter by Minimum Revenue
+        if hard_filters.get("min_revenue") is not None:
+            # We only drop if the company HAS revenue data AND it's strictly less than our minimum.
+            # If the company's revenue is NaN (missing), we KEEP it. (Missing data robustness!)
+            filtered_df = filtered_df[
+                filtered_df['revenue'].isna() | (filtered_df['revenue'] >= hard_filters["min_revenue"])
+            ]
+
+        # Filter by Maximum Employees (Fixing the "fewer than" bug)
+        if hard_filters.get("max_employees") is not None:
+            filtered_df = filtered_df[
+                filtered_df['employee_count'].isna() | (filtered_df['employee_count'] <= hard_filters["max_employees"])
+            ]
+
+        # Filter by Minimum Employees
+        if hard_filters.get("min_employees") is not None:
+            filtered_df = filtered_df[
+                filtered_df['employee_count'].isna() | (filtered_df['employee_count'] >= hard_filters["min_employees"])
+            ]
+
+        # Filter by Public/Private Status
+        if hard_filters.get("is_public") is not None:
+            filtered_df = filtered_df[
+                filtered_df['is_public'].isna() | (filtered_df['is_public'] == hard_filters["is_public"])
+            ]
+
+        # Filter by Year Founded After
+        if hard_filters.get("year_founded_after") is not None:
+            filtered_df = filtered_df[
+                filtered_df['year_founded'].isna() | (filtered_df['year_founded'] >= hard_filters["year_founded_after"])
+            ]
+
+        # Filter by Year Founded Before
+        if hard_filters.get("year_founded_before") is not None:
+            filtered_df = filtered_df[
+                filtered_df['year_founded'].isna() | (filtered_df['year_founded'] <= hard_filters["year_founded_before"])
+            ]
+
+
+        # Filter by Location (Basic string matching)
+        if hard_filters.get("location") is not None:
+            target_loc = str(hard_filters["location"]).lower()
+            # Keep if missing, OR if the target location string is inside the company's address string
+            filtered_df = filtered_df[
+                filtered_df['address'].isna() |
+                filtered_df['address'].astype(str).str.lower().str.contains(target_loc, na=False)
+            ]
+
+        return filtered_df
+        
+        
+        
+    filter = CompaniesFilter(companies)
+
+    filtered_companies = filter.apply_filters(json_query["hard_filters"])
+    print(f"Reduced dataset from {len(companies)} to {len(filtered_companies)} companies.")
+
+    filtered_companies.to_json('filtered_companies.json', orient='records', lines=True)
+
