@@ -1,8 +1,31 @@
+import os
+# Disable Hugging Face progress bars and symlink warnings
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+
+# CORRECTED: Import the logging module directly from huggingface_hub.utils
+from huggingface_hub.utils import logging as hf_hub_logging
+hf_hub_logging.set_verbosity_error()
+
+# Silence the transformers logger
+from transformers import logging as transformers_logging
+transformers_logging.set_verbosity_error()
+
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+
+
 import ollama
 import json
 import re
 import numpy as np
 import pandas as pd
+import ast
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+
 
 class QueryParser:
     def __init__(self, model="llama3"):
@@ -240,19 +263,82 @@ class CompaniesFilter:
 
         return filtered_df
 
+class Searcher:
+    def __init__(self, model_name="all-MiniLM-L6-v2"):
+        self.model = SentenceTransformer(model_name)
+
+    def prepare_company_text(self, company):
+        attributes = []
+
+        # Get description
+        if pd.notna(company.get("description")):
+            description = company["description"]
+            attributes.append(str(description))
+
+        # Get primary naics
+        if pd.notna(company.get("primary_naics")):
+            primary_naics_data = company["primary_naics"]
+            primary_naics_dict = {}
+            if isinstance(primary_naics_data, str):
+                primary_naics_dict = ast.literal_eval(primary_naics_data)
+            elif isinstance(primary_naics_data, dict):
+                primary_naics_dict = primary_naics_data
+
+            attributes.append(f"Industry: {primary_naics_dict["label"]}")
+
+        # Get core offerings
+        if len(company.get("core_offerings")) > 0:
+            core_offerings = company["core_offerings"]
+            core_offerings = ", ".join(core_offerings)
+
+            attributes.append(f"Offering: {core_offerings}")
+
+        # Get target markets
+        if len(company.get("target_markets")) > 0:
+            target_markets = company["target_markets"]
+            target_markets = ", ".join(target_markets)
+
+            attributes.append(target_markets)
+
+        return " | ".join(attributes)
+
+    def rank_companies(self, companies, query, top_k):
+        if companies.empty:
+            return companies
+
+        company_attributes = companies.apply(self.prepare_company_text, axis = 1).tolist()
+
+        companies_embeddings = self.model.encode(company_attributes, show_progress_bar = False)
+        query_embedding = self.model.encode([query], show_progress_bar = False)
+
+        similarities = cosine_similarity(query_embedding, companies_embeddings)[0]
+
+        ranked_companies = companies.copy()
+        ranked_companies["score"] = similarities
+
+        ranked_companies = ranked_companies.sort_values(by="score", ascending = False)
+
+        return ranked_companies.head(top_k)
+
+
 if __name__ == "__main__":
     parser = QueryParser()
 
     companies = pd.read_json("companies.jsonl", lines=True)
-    filter = CompaniesFilter(companies)
+    # filter = CompaniesFilter(companies)
 
     query = input("Enter a prompt to search companies: \n")
 
-    json_query = parser.extract_json_from_query(query)
+    # json_query = parser.extract_json_from_query(query)
 
-    filtered_companies = filter.apply_filters(json_query["hard_filters"])
-    print(f"Reduced dataset from {len(companies)} to {len(filtered_companies)} companies.")
+    # filtered_companies = filter.apply_filters(json_query["hard_filters"])
+    # print(f"Reduced dataset from {len(companies)} to {len(filtered_companies)} companies.")
 
-    parser.print_json(json_query)
+    # parser.print_json(json_query)
 
-    filtered_companies.to_json('filtered_companies.json', orient='records', lines=True)
+    # filtered_companies.to_json('filtered_companies.json', orient='records', lines=True)
+
+    searcher = Searcher()
+    ranked_companies = searcher.rank_companies(companies, query, 50)
+
+    print(ranked_companies)
