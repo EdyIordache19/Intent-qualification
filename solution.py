@@ -320,25 +320,114 @@ class Searcher:
 
         return ranked_companies.head(top_k)
 
+class IntentValidator:
+    def __init__(self, model = "llama3"):
+        self.model = model
+        self.system_prompt = """
+        You are an expert business analyst and qualification engine. Your job is to determine if a specific company TRULY matches a user's search intent.
+
+        You will be provided with:
+        1. The User's Query.
+        2. A JSON object containing the Company's profile.
+
+        CRITICAL INSTRUCTIONS:
+        - Do not just look for keyword similarity. Look for INTENT.
+        - If the user wants a "supplier of packaging for cosmetics", a company that ONLY manufactures cosmetics is a NO. They must supply the packaging.
+        - If the user wants "B2B SaaS", a consumer app is a NO.
+        - Be highly critical. If the company profile does not explicitly support the user's core intent, reject it.
+
+        You MUST output a strict JSON object with EXACTLY this schema:
+        {
+            "is_match": true or false,
+            "confidence": "high", "medium", or "low",
+            "reasoning": "1-2 sentences explaining exactly why they match or fail the specific intent of the query."
+        }
+
+        Start your response immediately with `{`. No markdown formatting. No conversational text.
+        """
+
+    def clean_json(self, raw_output):
+        cleaned_output = raw_output.strip()
+        if cleaned_output.startswith("```json"):
+            cleaned_output = cleaned_output[7:]
+        if cleaned_output.startswith("```"):
+            cleaned_output = cleaned_output[3:]
+        if cleaned_output.endswith("```"):
+            cleaned_output = cleaned_output[:-3]
+
+        return cleaned_output
+
+    def validate_company(self, query, company):
+        company_data = {
+            "name": company.get("operational_name"),
+            "description": company.get("description"),
+            "core_offerings": company.get("core_offerings"),
+            "business_model": company.get("business_model"),
+            "industry": company.get("primary_naics", {}).get("label") if isinstance(company.get("primary_naics"), dict) else None
+        }
+
+        prompt = f"User Query: '{query}'\n\nCompany Profile:\n{json.dumps(company_data, indent=2)}\n\nOutput strict JSON:"
+
+        response = ollama.chat(
+            model = self.model,
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            options = {
+                "temperature": 0.0
+            },
+            format="json"
+        )
+
+        raw_output = response["message"]["content"]
+        cleaned_output = self.clean_json(raw_output)
+
+        try:
+            return json.loads(cleaned_output)
+        except json.JSONDecodeError:
+            print(f"[Warning] Failed to parse validation JSON for {company_data['name']}")
+            return {"is_match": False, "confidence": "low", "reasoning": "Parsing failed."}
+
+    def validate_and_filter_companies(self, companies, query):
+        good_companies = []
+
+        for index, company in companies.iterrows():
+            validation_result = self.validate_company(query, company)
+
+            if validation_result.get("is_match") is True:
+                company_dict = company.to_dict()
+
+                company_dict["reasoning"] = validation_result.get("reasoning")
+                company_dict["confidence"] = validation_result.get("confidence")
+
+                good_companies.append(company_dict)
+
+        return pd.DataFrame(good_companies)
 
 if __name__ == "__main__":
     parser = QueryParser()
 
     companies = pd.read_json("companies.jsonl", lines=True)
-    # filter = CompaniesFilter(companies)
+    filter = CompaniesFilter(companies)
 
     query = input("Enter a prompt to search companies: \n")
 
-    # json_query = parser.extract_json_from_query(query)
+    json_query = parser.extract_json_from_query(query)
 
-    # filtered_companies = filter.apply_filters(json_query["hard_filters"])
-    # print(f"Reduced dataset from {len(companies)} to {len(filtered_companies)} companies.")
+    filtered_companies = filter.apply_filters(json_query["hard_filters"])
+    print(f"Reduced dataset from {len(companies)} to {len(filtered_companies)} companies.")
 
-    # parser.print_json(json_query)
+    parser.print_json(json_query)
 
-    # filtered_companies.to_json('filtered_companies.json', orient='records', lines=True)
+    filtered_companies.to_json('filtered_companies.json', orient='records', lines=True)
 
     searcher = Searcher()
-    ranked_companies = searcher.rank_companies(companies, query, 50)
+    ranked_companies = searcher.rank_companies(filtered_companies, query, 10)
 
     print(ranked_companies)
+
+    validator = IntentValidator("qwen2.5:1.5b")
+    validated_companies = validator.validate_and_filter_companies(ranked_companies, query)
+
+    validated_companies.to_json('validated_companies.json', orient='records', lines=True)
