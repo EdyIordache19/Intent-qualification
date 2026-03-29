@@ -1,5 +1,6 @@
 import os
 # Disable Hugging Face progress bars and symlink warnings
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
@@ -12,11 +13,6 @@ hf_hub_logging.set_verbosity_error()
 from transformers import logging as transformers_logging
 transformers_logging.set_verbosity_error()
 
-import warnings
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-
-
 import ollama
 import json
 import re
@@ -26,9 +22,31 @@ import ast
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
+
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
+
+import io
+import contextlib
+import sys
 
 class QueryParser:
     def __init__(self, model="llama3"):
+        logging.info(f"Initializing the QueryParser with the {model} model")
         self.model = model
         self.system_prompt = """
             You are a highly precise data extraction API. Your ONLY job is to extract search constraints from a user query and format them into a strict JSON object.
@@ -94,6 +112,7 @@ class QueryParser:
         #        -> If value ambiguous, use soft filter later in cosine similarity
 
     def clean_query(self, raw_query):
+        logging.info(f"Cleaning the query {raw_query}")
         if not raw_query:
             return ""
         # Remove extra whitespaces and newline characters
@@ -103,6 +122,7 @@ class QueryParser:
 
     # Clean initial output from Llama3
     def clean_output(self, raw_output):
+        logging.info("Cleaning the output")
         cleaned_output = raw_output.strip()
         if cleaned_output.startswith("```json"):
             cleaned_output = cleaned_output[7:]
@@ -115,6 +135,7 @@ class QueryParser:
 
     # Get basic JSON with None values
     def get_fallback_json(self):
+        logging.info("Getting default JSON")
         return {
             "_reasoning": "Fallback used due to parsing failure.",
             "hard_filters": {
@@ -128,7 +149,9 @@ class QueryParser:
         }
 
     def sanitize_json(self, parsed_json):
+        logging.info("Sanitizing JSON")
         if not parsed_json or "hard_filters" not in parsed_json:
+            logging.warning("Hard filters missing from JSON")
             return self.get_fallback_json()
 
         hard_filters = parsed_json.get("hard_filters", {})
@@ -141,25 +164,25 @@ class QueryParser:
                 try:
                     hard_filters[filter] = int(val)
                 except ValueError:
-                    print(f"[Warning] Invalid type for {filter}: {val}. Defaulting to None.")
+                    logging.warning(f"Invalid type for {filter}: {val}. Defaulting to None.")
                     hard_filters[filter] = None
 
         # Logic errors
         if hard_filters.get("min_employees") and hard_filters.get("max_employees"):
             if hard_filters["min_employees"] > hard_filters["max_employees"]:
-                print("[Warning] Logical error: min_employees > max_employees. Clearing both.")
+                logging.warning("Logical error: min_employees > max_employees. Clearing both.")
                 hard_filters["min_employees"] = None
                 hard_filters["max_employees"] = None
 
         if hard_filters.get("min_revenue") and hard_filters.get("max_revenue"):
             if hard_filters["min_revenue"] > hard_filters["max_revenue"]:
-                print("[Warning] Logical error: min_revenue > max_revenue. Clearing both.")
+                logging.warning("Logical error: min_revenue > max_revenue. Clearing both.")
                 hard_filters["min_revenue"] = None
                 hard_filters["max_revenue"] = None
 
         if hard_filters.get("year_founded_after") and hard_filters.get("year_founded_before"):
             if hard_filters["year_founded_after"] > hard_filters["year_founded_before"]:
-                print("[Warning] Logical error: founded_after > founded_before. Clearing both.")
+                logging.warning("Logical error: founded_after > founded_before. Clearing both.")
                 hard_filters["year_founded_after"] = None
                 hard_filters["year_founded_before"] = None
 
@@ -174,10 +197,11 @@ class QueryParser:
 
 
     def extract_json_from_query(self, raw_query):
+        logging.info(f"Calling {self.model} model for extracting JSON from query")
         cleaned_query = self.clean_query(raw_query)
 
         response = ollama.chat(
-            model = "llama3",
+            model = self.model,
             messages = [
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": f'Query: "{cleaned_query}"\nOutput:'}
@@ -199,7 +223,7 @@ class QueryParser:
             final_json = self.sanitize_json(parsed_json)
             return final_json
         except json.JSONDecodeError:
-            print(f"Failed to parse JSON. Raw output was: {raw_output}")
+            logging.warning(f"Failed to parse JSON. Raw output was: \n{raw_output}")
             return self.get_fallback_json()
 
     def print_json(self, json_query):
@@ -207,11 +231,13 @@ class QueryParser:
 
 class CompaniesFilter:
     def __init__(self, df):
+        logging.info("Initializing CompaniesFilter")
         self.df = df
 
     # Only drop if the company has specific data AND it's less/more than minimum/maximum
     # If the company's data is None, we keep it (Missing data robustness)
     def apply_filters(self, hard_filters):
+        logging.info("Applying hard filters")
         filtered_df = self.df.copy()
 
         # Filter by Minimum Revenue
@@ -264,7 +290,8 @@ class CompaniesFilter:
 
 class Searcher:
     def __init__(self, model_name="all-MiniLM-L6-v2"):
-        self.model = SentenceTransformer(model_name)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.model = SentenceTransformer(model_name)
 
     def prepare_company_text(self, company):
         attributes = []
@@ -302,9 +329,12 @@ class Searcher:
         return " | ".join(attributes)
 
     def rank_companies(self, companies, query, top_k):
+        logging.info("Ranking companies based on cosine similarity")
         if companies.empty:
+            logging.warning("No companies left to rank")
             return companies
 
+        logging.info(f"Preparing text and generating embeddings for {len(df)} companies...")
         company_attributes = companies.apply(self.prepare_company_text, axis = 1).tolist()
 
         companies_embeddings = self.model.encode(company_attributes, show_progress_bar = False)
@@ -321,6 +351,7 @@ class Searcher:
 
 class IntentValidator:
     def __init__(self, model = "llama3"):
+        logging.info(f"Initializing IntentValidator with {model} model")
         self.model = model
         self.system_prompt = """
         You are an expert business analyst and qualification engine. Your job is to determine if a specific company TRULY matches a user's search intent.
@@ -346,6 +377,7 @@ class IntentValidator:
         """
 
     def clean_json(self, raw_output):
+        logging.info("Cleaning the JSON")
         cleaned_output = raw_output.strip()
         if cleaned_output.startswith("```json"):
             cleaned_output = cleaned_output[7:]
@@ -357,6 +389,8 @@ class IntentValidator:
         return cleaned_output
 
     def validate_company(self, query, company):
+        company_name = company.get('operational_name', 'Unknown')
+        logging.info(f"Validating intent for: {company_name}")
         company_data = {
             "name": company.get("operational_name"),
             "description": company.get("description"),
@@ -385,10 +419,11 @@ class IntentValidator:
         try:
             return json.loads(cleaned_output)
         except json.JSONDecodeError:
-            print(f"[Warning] Failed to parse validation JSON for {company_data['name']}")
+            logging.warning(f"Failed to parse validation JSON for {company_data['name']}")
             return {"is_match": False, "confidence": "low", "reasoning": "Parsing failed."}
 
     def validate_and_filter_companies(self, companies, query):
+        logging.info("Extracting correct companies")
         good_companies = []
 
         for index, company in companies.iterrows():
@@ -406,12 +441,15 @@ class IntentValidator:
 
 class SearchEngine:
     def __init__(self, companies):
+        logging.info("Initializing the SearchEngine")
         self.parser = QueryParser()
         self.filter = CompaniesFilter(companies)
         self.searcher = Searcher()
         self.validator = IntentValidator()
 
     def run(self, query, top_k = 20):
+        logging.info("Running the search engine")
+
         # Parse query
         json_query = self.parser.extract_json_from_query(query)
         self.parser.print_json(json_query)
@@ -433,8 +471,7 @@ class SearchEngine:
 
 if __name__ == "__main__":
     companies = pd.read_json("companies.jsonl", lines=True)
-    search_engine = SearchEngine(companies)
-
     query = input("Please enter a query: \n")
 
+    search_engine = SearchEngine(companies)
     search_engine.run(query, 10)
