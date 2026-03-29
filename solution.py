@@ -94,7 +94,6 @@ class QueryParser:
         #        -> If value ambiguous, use soft filter later in cosine similarity
 
     def clean_query(self, raw_query):
-        """Pre-processing: Clean the user's raw query."""
         if not raw_query:
             return ""
         # Remove extra whitespaces and newline characters
@@ -405,29 +404,37 @@ class IntentValidator:
 
         return pd.DataFrame(good_companies)
 
+class SearchEngine:
+    def __init__(self, companies):
+        self.parser = QueryParser()
+        self.filter = CompaniesFilter(companies)
+        self.searcher = Searcher()
+        self.validator = IntentValidator()
+
+    def run(self, query, top_k = 20):
+        # Parse query
+        json_query = self.parser.extract_json_from_query(query)
+        self.parser.print_json(json_query)
+
+        # Filter based on JSON query
+        filtered_companies = self.filter.apply_filters(json_query["hard_filters"])
+        print(f"Reduced dataset from {len(companies)} to {len(filtered_companies)} companies.")
+        filtered_companies.to_json('filtered_companies.json', orient='records', lines=True)
+
+        # Rank top k companies based on embeddings
+        ranked_companies = self.searcher.rank_companies(filtered_companies, query, top_k)
+        print(ranked_companies)
+
+        # Validate companies
+        validated_companies = self.validator.validate_and_filter_companies(ranked_companies, query)
+        validated_companies.to_json('validated_companies.json', orient='records', lines=True)
+
+        return validated_companies
+
 if __name__ == "__main__":
-    parser = QueryParser()
-
     companies = pd.read_json("companies.jsonl", lines=True)
-    filter = CompaniesFilter(companies)
+    search_engine = SearchEngine(companies)
 
-    query = input("Enter a prompt to search companies: \n")
+    query = input("Please enter a query: \n")
 
-    json_query = parser.extract_json_from_query(query)
-
-    filtered_companies = filter.apply_filters(json_query["hard_filters"])
-    print(f"Reduced dataset from {len(companies)} to {len(filtered_companies)} companies.")
-
-    parser.print_json(json_query)
-
-    filtered_companies.to_json('filtered_companies.json', orient='records', lines=True)
-
-    searcher = Searcher()
-    ranked_companies = searcher.rank_companies(filtered_companies, query, 10)
-
-    print(ranked_companies)
-
-    validator = IntentValidator("qwen2.5:1.5b")
-    validated_companies = validator.validate_and_filter_companies(ranked_companies, query)
-
-    validated_companies.to_json('validated_companies.json', orient='records', lines=True)
+    search_engine.run(query, 10)

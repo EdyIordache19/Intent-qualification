@@ -4,7 +4,6 @@ Phase 1: Query extraction -> Ollama llama3 + RegEx (maybe)
 	Clean the final JSON and validate it
 	
 Phase 2: Hard filtering -> Use JSON from llama3 to filter the hard to interpret values and drop anything non-matching
-	
 
 Phase 3: Cosine similarity -> Use embeddings (sentence-transformers, all-MiniLM-L6-v2) to rank the remaining companies; 
 			      Get help from soft filters from ph. 2
