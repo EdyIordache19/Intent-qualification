@@ -334,7 +334,7 @@ class Searcher:
             logging.warning("No companies left to rank")
             return companies
 
-        logging.info(f"Preparing text and generating embeddings for {len(df)} companies...")
+        logging.info(f"Preparing text and generating embeddings for {len(companies)} companies...")
         company_attributes = companies.apply(self.prepare_company_text, axis = 1).tolist()
 
         companies_embeddings = self.model.encode(company_attributes, show_progress_bar = False)
