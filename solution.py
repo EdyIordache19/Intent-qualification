@@ -20,9 +20,9 @@ import numpy as np
 import pandas as pd
 import ast
 import concurrent.futures
+import groq
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-from groq import Groq
 
 import logging
 logging.basicConfig(
@@ -73,12 +73,11 @@ class BaseLLM:
         self.mode = mode
 
         if self.mode == "cloud":
-            self.groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            self.groq_client = groq.Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-    def run_prompt(self, system_prompt: str, user_prompt: str) -> str:
+    def run_local(self, system_prompt: str, user_prompt: str) -> str:
         try:
-            if self.mode == "local":
-                response = ollama.chat(
+            response = ollama.chat(
                 model = self.model,
                     messages = [
                         {"role": "system", "content": system_prompt},
@@ -90,19 +89,47 @@ class BaseLLM:
                     format="json"
                 )
 
-                return response["message"]["content"]
+            return response["message"]["content"]
+        except ollama.ResponseError as e:
+            if "not found" in str(e).lower():
+                logging.error(f"Local model '{self.model}' not found! Please run: `ollama pull {self.model}` in your terminal.")
+                sys.exit(1)
             else:
-                chat_completion = self.groq_client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    model=self.model,
-                    temperature=0.0,
-                    response_format={"type": "json_object"}
-                )
+                logging.error(f"Ollama Error: {e}")
+                sys.exit(1)
+        except ConnectionError:
+            logging.error("Could not initialize Ollama")
+            sys.exit(1)
 
-                return chat_completion.choices[0].message.content
+    def run_cloud(self, system_prompt: str, user_prompt: str) -> str:
+        try:
+            chat_completion = self.groq_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                model=self.model,
+                temperature=0.0,
+                response_format={"type": "json_object"}
+            )
+
+            return chat_completion.choices[0].message.content
+        except groq.AuthenticationError:
+            logging.error("Invalid GROQ_API_KEY. Please check your environment variables.")
+            sys.exit(1)
+        except groq.RateLimitError:
+            logging.error("Groq Rate Limit exceeded (Out of tokens or requests). Please wait and try again.")
+            sys.exit(1)
+        except groq.APIConnectionError:
+            logging.error("Network error: Could not connect to the Groq API.")
+            sys.exit(1)
+
+    def run_prompt(self, system_prompt: str, user_prompt: str) -> str:
+        try:
+            if self.mode == "local":
+                self.run_local(system_prompt, user_prompt)
+            else:
+                self.run_cloud(system_prompt, user_prompt)
 
         except Exception as e:
             logging.error(f"LLM Execution Error: {e}")
@@ -338,25 +365,29 @@ class Searcher:
             primary_naics_data = company["primary_naics"]
             primary_naics_dict = {}
             if isinstance(primary_naics_data, str):
-                primary_naics_dict = ast.literal_eval(primary_naics_data)
+                try:
+                    primary_naics_dict = ast.literal_eval(primary_naics_data)
+                except (ValueError, SyntaxError):
+                    pass
             elif isinstance(primary_naics_data, dict):
                 primary_naics_dict = primary_naics_data
 
-            attributes.append(f"Industry: {primary_naics_dict["label"]}")
+            if primary_naics_dict and "label" in primary_naics_dict:
+                attributes.append(f"Industry: {primary_naics_dict["label"]}")
 
         # Get core offerings
-        if len(company.get("core_offerings")) > 0:
-            core_offerings = company["core_offerings"]
-            core_offerings = ", ".join(core_offerings)
+        core_offerings = company.get("core_offerings")
+        if isinstance(core_offerings, list) and len(core_offerings) > 0:
+            core_offerings_str = ", ".join(core_offerings)
 
-            attributes.append(f"Offering: {core_offerings}")
+            attributes.append(f"Offering: {core_offerings_str}")
 
         # Get target markets
-        if len(company.get("target_markets")) > 0:
-            target_markets = company["target_markets"]
-            target_markets = ", ".join(target_markets)
+        target_markets = company.get("target_markets")
+        if isinstance(target_markets, list) and len(target_markets) > 0:
+            target_markets_str = ", ".join(target_markets)
 
-            attributes.append(target_markets)
+            attributes.append(f"Target Markets: {target_markets_str}")
 
         return " | ".join(attributes)
 
