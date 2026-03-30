@@ -19,6 +19,7 @@ import re
 import numpy as np
 import pandas as pd
 import ast
+import concurrent.futures
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -361,10 +362,10 @@ class IntentValidator:
         2. A JSON object containing the Company's profile.
 
         CRITICAL INSTRUCTIONS:
-        - Do not just look for keyword similarity. Look for INTENT.
-        - If the user wants a "supplier of packaging for cosmetics", a company that ONLY manufactures cosmetics is a NO. They must supply the packaging.
-        - If the user wants "B2B SaaS", a consumer app is a NO.
-        - Be highly critical. If the company profile does not explicitly support the user's core intent, reject it.
+            - Evaluate the company's core identity, not just keyword matches.
+            - PAY ATTENTION TO THE SUPPLY CHAIN: If the user asks for a "Cosmetics Company" (meaning they make makeup/skincare), a company that makes "Cosmetics Packaging" (plastic bottles) is a strict NO.
+            - If the user asks for "Software", an IT consulting firm is a NO.
+            - You must critically analyze if the company *is* the target, or if they just *serve* the target. If they only serve the target industry, output "is_match": false.
 
         You MUST output a strict JSON object with EXACTLY this schema:
         {
@@ -426,18 +427,44 @@ class IntentValidator:
         logging.info("Extracting correct companies")
         good_companies = []
 
-        for index, company in companies.iterrows():
-            validation_result = self.validate_company(query, company)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures_to_row = {
+                executor.submit(self.validate_company, query, company): company for _, company in companies.iterrows()
+            }
 
-            if validation_result.get("is_match") is True:
-                company_dict = company.to_dict()
+            for future in concurrent.futures.as_completed(futures_to_row):
+                row = futures_to_row[future]
+                company_name = row.get("operational_name", "Unknown")
 
-                company_dict["reasoning"] = validation_result.get("reasoning")
-                company_dict["confidence"] = validation_result.get("confidence")
+                try:
+                    validation_result = future.result()
 
-                good_companies.append(company_dict)
+                    if validation_result.get("is_match") is True:
+                        logging.info(f"MATCH: {company_name} | Confidence: {validation_result.get('confidence')}")
+                        row_dict = row.to_dict()
+                        row_dict["qualification_reasoning"] = validation_result.get("reasoning")
+                        row_dict["confidence"] = validation_result.get("confidence")
+                        good_companies.append(row_dict)
+                    else:
+                        logging.info(f"REJECTED: {company_name} | Reason: {validation_result.get('reasoning')}")
 
+                except Exception as e:
+                    logging.error(f"Validation failed for {company_name}. Error: {e}")
+
+        logging.info(f"Intent Validation complete. {len(good_companies)} companies qualified.")
         return pd.DataFrame(good_companies)
+
+        # for index, company in companies.iterrows():
+        #     validation_result = self.validate_company(query, company)
+
+        #     if validation_result.get("is_match") is True:
+        #         company_dict = company.to_dict()
+
+        #         company_dict["reasoning"] = validation_result.get("reasoning")
+        #         company_dict["confidence"] = validation_result.get("confidence")
+
+        #         good_companies.append(company_dict)
+
 
 class SearchEngine:
     def __init__(self, companies):
