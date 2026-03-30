@@ -204,7 +204,7 @@ class QueryParser(BaseLLM):
         #        -> If value ambiguous, use soft filter later in cosine similarity
 
     # Get basic JSON with None values
-    def get_fallback_json(self) -> json:
+    def get_fallback_json(self) -> dict:
         logging.info("Getting default JSON")
         return {
             "_reasoning": "Fallback used due to parsing failure.",
@@ -218,7 +218,7 @@ class QueryParser(BaseLLM):
             }
         }
 
-    def sanitize_json(self, parsed_json: json) -> json:
+    def sanitize_json(self, parsed_json: dict) -> dict:
         logging.info("Sanitizing JSON")
         if not parsed_json or "hard_filters" not in parsed_json:
             logging.warning("Hard filters missing from JSON")
@@ -265,7 +265,7 @@ class QueryParser(BaseLLM):
         parsed_json["hard_filters"] = hard_filters
         return parsed_json
 
-    def extract_json_from_query(self, raw_query: str) -> json:
+    def extract_json_from_query(self, raw_query: str) -> dict:
         logging.info(f"Calling {self.model} model for extracting JSON from query")
         cleaned_query = clean_query(raw_query)
 
@@ -285,7 +285,7 @@ class QueryParser(BaseLLM):
             logging.warning(f"Failed to parse JSON. Raw output was: \n{raw_output}")
             return self.get_fallback_json()
 
-    def print_json(self, json_query: json):
+    def print_json(self, json_query: dict):
         print(json.dumps(json_query, indent = 2))
 
 class CompaniesFilter:
@@ -373,7 +373,7 @@ class Searcher:
                 primary_naics_dict = primary_naics_data
 
             if primary_naics_dict and "label" in primary_naics_dict:
-                attributes.append(f"Industry: {primary_naics_dict["label"]}")
+                attributes.append(f"Industry: {primary_naics_dict['label']}")
 
         # Get core offerings
         core_offerings = company.get("core_offerings")
@@ -440,7 +440,7 @@ class IntentValidator(BaseLLM):
             Start your response immediately with `{`. No markdown formatting. No conversational text.
         """
 
-    def validate_company(self, query: str, company: pd.Series) -> json:
+    def validate_company(self, query: str, company: pd.Series) -> dict:
         company_name = company.get('operational_name', 'Unknown')
         logging.info(f"Validating intent for: {company_name}")
         company_data = {
