@@ -46,15 +46,72 @@ import io
 import contextlib
 import sys
 
-class QueryParser:
-    def __init__(self, model="llama3", mode="cloud"):
-        logging.info(f"Initializing the QueryParser with the {model} model")
+def clean_json(raw_output: str) -> str:
+    logging.info("Cleaning the output")
+    cleaned_output = raw_output.strip()
+    if cleaned_output.startswith("```json"):
+        cleaned_output = cleaned_output[7:]
+    if cleaned_output.startswith("```"):
+        cleaned_output = cleaned_output[3:]
+    if cleaned_output.endswith("```"):
+        cleaned_output = cleaned_output[:-3]
+
+    return cleaned_output
+
+def clean_query(raw_query: str) -> str:
+    logging.info(f"Cleaning the user query")
+    if not raw_query:
+        return ""
+    # Remove extra whitespaces and newline characters
+    cleaned = re.sub(r'\s+', ' ', raw_query).strip()
+
+    return cleaned
+
+class BaseLLM:
+    def __init__(self, model: str = "llama3", mode: str = "local"):
         self.model = model
         self.mode = mode
 
-        if (self.mode == "cloud"):
+        if self.mode == "cloud":
             self.groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-            self.model = "llama-3.3-70b-versatile"
+
+    def run_prompt(self, system_prompt: str, user_prompt: str) -> str:
+        try:
+            if self.mode == "local":
+                response = ollama.chat(
+                model = self.model,
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    options = {
+                        "temperature": 0.0
+                    },
+                    format="json"
+                )
+
+                return response["message"]["content"]
+            else:
+                chat_completion = self.groq_client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    model=self.model,
+                    temperature=0.0,
+                    response_format={"type": "json_object"}
+                )
+
+                return chat_completion.choices[0].message.content
+
+        except Exception as e:
+            logging.error(f"LLM Execution Error: {e}")
+            sys.exit(1)
+
+class QueryParser(BaseLLM):
+    def __init__(self, model: str = "llama3", mode: str = "local"):
+        logging.info(f"Initializing the QueryParser with the {model} model")
+        super().__init__(model=model, mode=mode)
 
         self.system_prompt = """
             You are a highly precise data extraction API. Your ONLY job is to extract search constraints from a user query and format them into a strict JSON object.
@@ -119,30 +176,8 @@ class QueryParser:
         #        -> If value hard to interpret, use hard filter
         #        -> If value ambiguous, use soft filter later in cosine similarity
 
-    def clean_query(self, raw_query):
-        logging.info(f"Cleaning the query {raw_query}")
-        if not raw_query:
-            return ""
-        # Remove extra whitespaces and newline characters
-        cleaned = re.sub(r'\s+', ' ', raw_query).strip()
-
-        return cleaned
-
-    # Clean initial output from Llama3
-    def clean_output(self, raw_output):
-        logging.info("Cleaning the output")
-        cleaned_output = raw_output.strip()
-        if cleaned_output.startswith("```json"):
-            cleaned_output = cleaned_output[7:]
-        if cleaned_output.startswith("```"):
-            cleaned_output = cleaned_output[3:]
-        if cleaned_output.endswith("```"):
-            cleaned_output = cleaned_output[:-3]
-
-        return cleaned_output
-
     # Get basic JSON with None values
-    def get_fallback_json(self):
+    def get_fallback_json(self) -> json:
         logging.info("Getting default JSON")
         return {
             "_reasoning": "Fallback used due to parsing failure.",
@@ -156,7 +191,7 @@ class QueryParser:
             }
         }
 
-    def sanitize_json(self, parsed_json):
+    def sanitize_json(self, parsed_json: json) -> json:
         logging.info("Sanitizing JSON")
         if not parsed_json or "hard_filters" not in parsed_json:
             logging.warning("Hard filters missing from JSON")
@@ -203,47 +238,15 @@ class QueryParser:
         parsed_json["hard_filters"] = hard_filters
         return parsed_json
 
-    def run_local(self, prompt):
-        response = ollama.chat(
-            model = self.model,
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            options = {
-                "temperature": 0.0
-            },
-            format="json"
-        )
-
-        return response["message"]["content"]
-
-    def run_cloud(self, prompt):
-        chat_completion = self.groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            model=self.model,
-            temperature=0.0,
-            response_format={"type": "json_object"}
-        )
-
-        return chat_completion.choices[0].message.content
-
-
-    def extract_json_from_query(self, raw_query):
+    def extract_json_from_query(self, raw_query: str) -> json:
         logging.info(f"Calling {self.model} model for extracting JSON from query")
-        cleaned_query = self.clean_query(raw_query)
+        cleaned_query = clean_query(raw_query)
 
         prompt = f'Query: "{cleaned_query}"\nOutput:'
 
         # Extract the raw output and clean from llm output
-        if self.mode == "local":
-            raw_output = self.run_local(prompt)
-        else:
-            raw_output = self.run_cloud(prompt)
-        cleaned_output = self.clean_output(raw_output)
+        raw_output = self.run_prompt(self.system_prompt, prompt)
+        cleaned_output = clean_json(raw_output)
 
         # Sanitize and clean JSON
         # Try to parse the output as JSON
@@ -255,7 +258,7 @@ class QueryParser:
             logging.warning(f"Failed to parse JSON. Raw output was: \n{raw_output}")
             return self.get_fallback_json()
 
-    def print_json(self, json_query):
+    def print_json(self, json_query: json):
         print(json.dumps(json_query, indent = 2))
 
 class CompaniesFilter:
@@ -265,7 +268,7 @@ class CompaniesFilter:
 
     # Only drop if the company has specific data AND it's less/more than minimum/maximum
     # If the company's data is None, we keep it (Missing data robustness)
-    def apply_filters(self, hard_filters):
+    def apply_filters(self, hard_filters: dict) -> pd.DataFrame:
         logging.info("Applying hard filters")
         filtered_df = self.df.copy()
 
@@ -318,11 +321,11 @@ class CompaniesFilter:
         return filtered_df
 
 class Searcher:
-    def __init__(self, model_name="all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.model = SentenceTransformer(model_name)
 
-    def prepare_company_text(self, company):
+    def prepare_company_text(self, company: pd.Series) -> str:
         attributes = []
 
         # Get description
@@ -357,35 +360,31 @@ class Searcher:
 
         return " | ".join(attributes)
 
-    def rank_companies(self, companies, query, top_k):
+    def rank_companies(self, companies_df: pd.DataFrame, query, top_k) -> pd.DataFrame:
         logging.info("Ranking companies based on cosine similarity")
-        if companies.empty:
+        if companies_df.empty:
             logging.warning("No companies left to rank")
-            return companies
+            return companies_df
 
-        logging.info(f"Preparing text and generating embeddings for {len(companies)} companies...")
-        company_attributes = companies.apply(self.prepare_company_text, axis = 1).tolist()
+        logging.info(f"Preparing text and generating embeddings for {len(companies_df)} companies...")
+        company_attributes = companies_df.apply(self.prepare_company_text, axis = 1).tolist()
 
         companies_embeddings = self.model.encode(company_attributes, show_progress_bar = False)
         query_embedding = self.model.encode([query], show_progress_bar = False)
 
         similarities = cosine_similarity(query_embedding, companies_embeddings)[0]
 
-        ranked_companies = companies.copy()
+        ranked_companies = companies_df.copy()
         ranked_companies["score"] = similarities
 
         ranked_companies = ranked_companies.sort_values(by="score", ascending = False)
 
         return ranked_companies.head(top_k)
 
-class IntentValidator:
-    def __init__(self, model = "llama3", mode = "cloud"):
+class IntentValidator(BaseLLM):
+    def __init__(self, model: str = "llama3", mode: str = "local"):
         logging.info(f"Initializing IntentValidator with {model} model")
-        self.mode = mode
-        self.model = model
-        if (self.mode == "cloud"):
-            self.groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-            self.model = "llama-3.3-70b-versatile"
+        super().__init__(model=model, mode=mode)
 
         self.system_prompt = """
             You are an expert business analyst and qualification engine. Your job is to determine if a specific company TRULY matches a user's search intent.
@@ -410,47 +409,7 @@ class IntentValidator:
             Start your response immediately with `{`. No markdown formatting. No conversational text.
         """
 
-    def clean_json(self, raw_output):
-        logging.info("Cleaning the JSON")
-        cleaned_output = raw_output.strip()
-        if cleaned_output.startswith("```json"):
-            cleaned_output = cleaned_output[7:]
-        if cleaned_output.startswith("```"):
-            cleaned_output = cleaned_output[3:]
-        if cleaned_output.endswith("```"):
-            cleaned_output = cleaned_output[:-3]
-
-        return cleaned_output
-
-    def run_local(self, prompt):
-        response = ollama.chat(
-            model = self.model,
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            options = {
-                "temperature": 0.0
-            },
-            format="json"
-        )
-
-        return response["message"]["content"]
-
-    def run_cloud(self, prompt):
-        chat_completion = self.groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            model=self.model, # Groq uses names like "llama3-8b-8192"
-            temperature=0.0,
-            response_format={"type": "json_object"} # Groq's way of forcing JSON
-        )
-
-        return chat_completion.choices[0].message.content
-
-    def validate_company(self, query, company):
+    def validate_company(self, query: str, company: pd.Series) -> json:
         company_name = company.get('operational_name', 'Unknown')
         logging.info(f"Validating intent for: {company_name}")
         company_data = {
@@ -463,12 +422,8 @@ class IntentValidator:
 
         prompt = f"User Query: '{query}'\n\nCompany Profile:\n{json.dumps(company_data, indent=2)}\n\nOutput strict JSON:"
 
-        if self.mode == "local":
-            raw_output = self.run_local(prompt)
-        else:
-            raw_output = self.run_cloud(prompt)
-
-        cleaned_output = self.clean_json(raw_output)
+        raw_output = self.run_prompt(self.system_prompt, prompt)
+        cleaned_output = clean_json(raw_output)
 
         try:
             return json.loads(cleaned_output)
@@ -476,13 +431,13 @@ class IntentValidator:
             logging.warning(f"Failed to parse validation JSON for {company_data['name']}")
             return {"is_match": False, "confidence": "low", "reasoning": "Parsing failed."}
 
-    def validate_and_filter_companies(self, companies, query):
+    def validate_and_filter_companies(self, companies_df: pd.DataFrame, query: str) -> pd.DataFrame:
         logging.info("Extracting correct companies")
         good_companies = []
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             futures_to_row = {
-                executor.submit(self.validate_company, query, company): company for _, company in companies.iterrows()
+                executor.submit(self.validate_company, query, company): company for _, company in companies_df.iterrows()
             }
 
             for future in concurrent.futures.as_completed(futures_to_row):
@@ -509,12 +464,14 @@ class IntentValidator:
 
 
 class SearchEngine:
-    def __init__(self, companies):
-        logging.info("Initializing the SearchEngine")
-        self.parser = QueryParser()
-        self.filter = CompaniesFilter(companies)
+    def __init__(self, companies_df: pd.DataFrame, mode: str = "local", model_name: str = "llama3"):
+        logging.info(f"Initializing SearchEngine | Mode: {mode.upper()} | Model: {model_name}")
+
+        self.companies_df = companies_df
+        self.parser = QueryParser(model=model_name, mode=mode)
+        self.filter = CompaniesFilter(companies_df)
         self.searcher = Searcher()
-        self.validator = IntentValidator(mode="cloud")
+        self.validator = IntentValidator(model=model_name, mode=mode)
 
     def run(self, query, top_k = 20):
         logging.info("Running the search engine")
@@ -525,7 +482,7 @@ class SearchEngine:
 
         # Filter based on JSON query
         filtered_companies = self.filter.apply_filters(json_query["hard_filters"])
-        print(f"Reduced dataset from {len(companies)} to {len(filtered_companies)} companies.")
+        print(f"Reduced dataset from {len(self.companies_df)} to {len(filtered_companies)} companies.")
         filtered_companies.to_json('filtered_companies.json', orient='records', lines=True)
 
         # Rank top k companies based on embeddings
@@ -539,8 +496,8 @@ class SearchEngine:
         return validated_companies
 
 if __name__ == "__main__":
-    companies = pd.read_json("companies.jsonl", lines=True)
+    companies_df = pd.read_json("companies.jsonl", lines=True)
     query = input("Please enter a query: \n")
 
-    search_engine = SearchEngine(companies)
+    search_engine = SearchEngine(companies_df, "local", "llama3")
     search_engine.run(query, 10)
