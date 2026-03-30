@@ -22,6 +22,7 @@ import ast
 import concurrent.futures
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+from groq import Groq
 
 import logging
 logging.basicConfig(
@@ -46,9 +47,15 @@ import contextlib
 import sys
 
 class QueryParser:
-    def __init__(self, model="llama3"):
+    def __init__(self, model="llama3", mode="cloud"):
         logging.info(f"Initializing the QueryParser with the {model} model")
         self.model = model
+        self.mode = mode
+
+        if (self.mode == "cloud"):
+            self.groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            self.model = "llama-3.3-70b-versatile"
+
         self.system_prompt = """
             You are a highly precise data extraction API. Your ONLY job is to extract search constraints from a user query and format them into a strict JSON object.
 
@@ -196,16 +203,12 @@ class QueryParser:
         parsed_json["hard_filters"] = hard_filters
         return parsed_json
 
-
-    def extract_json_from_query(self, raw_query):
-        logging.info(f"Calling {self.model} model for extracting JSON from query")
-        cleaned_query = self.clean_query(raw_query)
-
+    def run_local(self, prompt):
         response = ollama.chat(
             model = self.model,
             messages = [
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": f'Query: "{cleaned_query}"\nOutput:'}
+                {"role": "user", "content": prompt}
             ],
             options = {
                 "temperature": 0.0
@@ -213,8 +216,33 @@ class QueryParser:
             format="json"
         )
 
+        return response["message"]["content"]
+
+    def run_cloud(self, prompt):
+        chat_completion = self.groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            model=self.model,
+            temperature=0.0,
+            response_format={"type": "json_object"}
+        )
+
+        return chat_completion.choices[0].message.content
+
+
+    def extract_json_from_query(self, raw_query):
+        logging.info(f"Calling {self.model} model for extracting JSON from query")
+        cleaned_query = self.clean_query(raw_query)
+
+        prompt = f'Query: "{cleaned_query}"\nOutput:'
+
         # Extract the raw output and clean from llm output
-        raw_output = response["message"]["content"]
+        if self.mode == "local":
+            raw_output = self.run_local(prompt)
+        else:
+            raw_output = self.run_cloud(prompt)
         cleaned_output = self.clean_output(raw_output)
 
         # Sanitize and clean JSON
@@ -351,30 +379,35 @@ class Searcher:
         return ranked_companies.head(top_k)
 
 class IntentValidator:
-    def __init__(self, model = "llama3"):
+    def __init__(self, model = "llama3", mode = "cloud"):
         logging.info(f"Initializing IntentValidator with {model} model")
+        self.mode = mode
         self.model = model
+        if (self.mode == "cloud"):
+            self.groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            self.model = "llama-3.3-70b-versatile"
+
         self.system_prompt = """
-        You are an expert business analyst and qualification engine. Your job is to determine if a specific company TRULY matches a user's search intent.
+            You are an expert business analyst and qualification engine. Your job is to determine if a specific company TRULY matches a user's search intent.
 
-        You will be provided with:
-        1. The User's Query.
-        2. A JSON object containing the Company's profile.
+            You will be provided with:
+            1. The User's Query.
+            2. A JSON object containing the Company's profile.
 
-        CRITICAL INSTRUCTIONS:
-            - Evaluate the company's core identity, not just keyword matches.
-            - PAY ATTENTION TO THE SUPPLY CHAIN: If the user asks for a "Cosmetics Company" (meaning they make makeup/skincare), a company that makes "Cosmetics Packaging" (plastic bottles) is a strict NO.
-            - If the user asks for "Software", an IT consulting firm is a NO.
-            - You must critically analyze if the company *is* the target, or if they just *serve* the target. If they only serve the target industry, output "is_match": false.
+            CRITICAL INSTRUCTIONS:
+                - Evaluate the company's core identity, not just keyword matches.
+                - PAY ATTENTION TO THE SUPPLY CHAIN: If the user asks for a "Cosmetics Company" (meaning they make makeup/skincare), a company that makes "Cosmetics Packaging" (plastic bottles) is a strict NO.
+                - If the user asks for "Software", an IT consulting firm is a NO.
+                - You must critically analyze if the company *is* the target, or if they just *serve* the target. If they only serve the target industry, output "is_match": false.
 
-        You MUST output a strict JSON object with EXACTLY this schema:
-        {
-            "is_match": true or false,
-            "confidence": "high", "medium", or "low",
-            "reasoning": "1-2 sentences explaining exactly why they match or fail the specific intent of the query."
-        }
+            You MUST output a strict JSON object with EXACTLY this schema:
+            {
+                "is_match": true or false,
+                "confidence": "high", "medium", or "low",
+                "reasoning": "1-2 sentences explaining exactly why they match or fail the specific intent of the query."
+            }
 
-        Start your response immediately with `{`. No markdown formatting. No conversational text.
+            Start your response immediately with `{`. No markdown formatting. No conversational text.
         """
 
     def clean_json(self, raw_output):
@@ -389,6 +422,34 @@ class IntentValidator:
 
         return cleaned_output
 
+    def run_local(self, prompt):
+        response = ollama.chat(
+            model = self.model,
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            options = {
+                "temperature": 0.0
+            },
+            format="json"
+        )
+
+        return response["message"]["content"]
+
+    def run_cloud(self, prompt):
+        chat_completion = self.groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            model=self.model, # Groq uses names like "llama3-8b-8192"
+            temperature=0.0,
+            response_format={"type": "json_object"} # Groq's way of forcing JSON
+        )
+
+        return chat_completion.choices[0].message.content
+
     def validate_company(self, query, company):
         company_name = company.get('operational_name', 'Unknown')
         logging.info(f"Validating intent for: {company_name}")
@@ -402,19 +463,11 @@ class IntentValidator:
 
         prompt = f"User Query: '{query}'\n\nCompany Profile:\n{json.dumps(company_data, indent=2)}\n\nOutput strict JSON:"
 
-        response = ollama.chat(
-            model = self.model,
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            options = {
-                "temperature": 0.0
-            },
-            format="json"
-        )
+        if self.mode == "local":
+            raw_output = self.run_local(prompt)
+        else:
+            raw_output = self.run_cloud(prompt)
 
-        raw_output = response["message"]["content"]
         cleaned_output = self.clean_json(raw_output)
 
         try:
@@ -454,17 +507,6 @@ class IntentValidator:
         logging.info(f"Intent Validation complete. {len(good_companies)} companies qualified.")
         return pd.DataFrame(good_companies)
 
-        # for index, company in companies.iterrows():
-        #     validation_result = self.validate_company(query, company)
-
-        #     if validation_result.get("is_match") is True:
-        #         company_dict = company.to_dict()
-
-        #         company_dict["reasoning"] = validation_result.get("reasoning")
-        #         company_dict["confidence"] = validation_result.get("confidence")
-
-        #         good_companies.append(company_dict)
-
 
 class SearchEngine:
     def __init__(self, companies):
@@ -472,7 +514,7 @@ class SearchEngine:
         self.parser = QueryParser()
         self.filter = CompaniesFilter(companies)
         self.searcher = Searcher()
-        self.validator = IntentValidator()
+        self.validator = IntentValidator(mode="cloud")
 
     def run(self, query, top_k = 20):
         logging.info("Running the search engine")
