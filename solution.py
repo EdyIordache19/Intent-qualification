@@ -399,10 +399,16 @@ class Searcher:
             logging.warning("No companies left to rank")
             return companies_df
 
-        logging.info(f"Preparing text and generating embeddings for {len(companies_df)} companies...")
-        company_attributes = companies_df.apply(self.prepare_company_text, axis = 1).tolist()
+        if os.path.isfile("companies_embeddings.npy"):
+            logging.info(f"companies_embeddings.npy found, extracting embeddings for {len(companies_df)} companies...")
+            precomputed_embeddings = np.load("companies_embeddings.npy")
+            companies_embeddings = precomputed_embeddings[companies_df.index.tolist()]
 
-        companies_embeddings = self.model.encode(company_attributes, show_progress_bar = False)
+        else:
+            logging.info(f"companies_embeddings.npy not found, preparing text and generating embeddings for {len(companies_df)} companies...")
+            company_attributes = companies_df.apply(self.prepare_company_text, axis = 1).tolist()
+            companies_embeddings = self.model.encode(company_attributes, show_progress_bar = False)
+
         query_embedding = self.model.encode([query], show_progress_bar = False)
 
         similarities = cosine_similarity(query_embedding, companies_embeddings)[0]
