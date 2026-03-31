@@ -21,6 +21,7 @@ import pandas as pd
 import ast
 import concurrent.futures
 import groq
+import argparse
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -127,10 +128,11 @@ class BaseLLM:
     def run_prompt(self, system_prompt: str, user_prompt: str) -> str:
         try:
             if self.mode == "local":
-                self.run_local(system_prompt, user_prompt)
+                result = self.run_local(system_prompt, user_prompt)
             else:
-                self.run_cloud(system_prompt, user_prompt)
+                result = self.run_cloud(system_prompt, user_prompt)
 
+            return result
         except Exception as e:
             logging.error(f"LLM Execution Error: {e}")
             sys.exit(1)
@@ -522,13 +524,33 @@ class SearchEngine:
 
         # Validate companies
         validated_companies = self.validator.validate_and_filter_companies(ranked_companies, query)
-        validated_companies.to_json('validated_companies.json', orient='records', lines=True)
+        validated_companies.to_json('validated_companies.jsonl', orient='records', lines=True)
 
         return validated_companies
 
 if __name__ == "__main__":
-    companies_df = pd.read_json("companies.jsonl", lines=True)
-    query = input("Please enter a query: \n")
+    parser = argparse.ArgumentParser(description="Intent Qualification Engine")
 
-    search_engine = SearchEngine(companies_df, "local", "llama3")
-    search_engine.run(query, 10)
+    parser.add_argument("--query", type=str, required=True, help="The search query to evaluate")
+    parser.add_argument("--mode", type=str, choices=["local", "cloud"], default="local", help="Inference mode (local via Ollama or cloud via Groq)")
+    parser.add_argument("--model", type=str, default="llama3", help="The LLM model to use (e.g., llama3, llama-3.3-70b-versatile)")
+    parser.add_argument("--top_k", type=int, default=10, help="Number of semantic matches to evaluate")
+
+    args = parser.parse_args()
+    companies_df = pd.read_json("companies.jsonl", lines=True)
+
+    logging.info(f"Starting SearchEngine | Mode: {args.mode.upper()} | Model: {args.model}")
+    search_engine = SearchEngine(companies_df, mode=args.mode, model_name=args.model)
+    final_results = search_engine.run(args.query, top_k=args.top_k)
+
+    # Print a nice summary at the end
+    print("\n" + "="*50)
+    print(f"FINAL QUALIFIED RESULTS: {len(final_results)} companies")
+    print("="*50)
+
+    if not final_results.empty:
+        for idx, row in final_results.iterrows():
+            print(f"\n[ {row['operational_name']} ] - Confidence: {row.get('confidence', 'N/A').upper()}")
+            print(f"Why: {row.get('qualification_reasoning')}")
+    else:
+        print("\nNo companies passed the final intent qualification.")
