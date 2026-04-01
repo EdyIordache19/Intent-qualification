@@ -150,6 +150,7 @@ class QueryParser(BaseLLM):
             - "under", "less than", "fewer than", "smaller than", "below", "at most", "-" -> map to `max_revenue` or `max_employees`.
             - "after", "since" -> map to `year_founded_after`.
             - "prior to", "before" -> map to `year_founded_before`.
+            - "not from", "outside of", "excluding", "not in" -> map to `exclude_location`.
 
             INSTRUCTIONS:
             1. ONLY extract a constraint if explicitly stated. Do not guess.
@@ -157,25 +158,27 @@ class QueryParser(BaseLLM):
             3. You MUST start your response with a `_reasoning` key, briefly explaining how you map the numbers based on the comparators.
             4. Start your response immediately with `{`. No markdown formatting outside the JSON.
             5. Convert abbreviations like "M" (millions) or "B" (billions) to full integers (e.g., 10M -> 10000000, 2B -> 2000000000).
+            6. For `location` and `exclude_location`: If the user mentions a country, you MUST convert it to its 2-letter lowercase ISO country code (e.g., "Spain" -> "es", "United States" -> "us", "Brazil" -> "br"). If it is a city or region, leave it as is.
 
             Use EXACTLY this JSON structure:
             {
-            "_reasoning": "Brief explanation of how you mapped the comparators to the keys.",
-            "hard_filters": {
-                "location": null, // CRITICAL: MUST be a single string or null. NEVER a list [].
-                "min_revenue": null, // CRITICAL: Integer only.
-                "max_revenue": null,
-                "min_employees": null,
-                "max_employees": null,
-                "year_founded_after": null,
-                "year_founded_before": null,
-                "is_public": null
-            },
-            "soft_filters": {
-                "industry_or_vertical": [],
-                "business_model": [],
-                "core_offerings": []
-            }
+                "_reasoning": "Brief explanation of how you mapped the comparators to the keys.",
+                "hard_filters": {
+                    "location": null, // MUST be a single string or null.
+                    "exclude_location": null, // MUST be a single string or null. For negative matches.
+                    "min_revenue": null,
+                    "max_revenue": null,
+                    "min_employees": null,
+                    "max_employees": null,
+                    "year_founded_after": null,
+                    "year_founded_before": null,
+                    "is_public": null
+                },
+                "soft_filters": {
+                    "industry_or_vertical": [],
+                    "business_model": [],
+                    "core_offerings": []
+                }
             }
 
             Example 1:
@@ -258,11 +261,16 @@ class QueryParser(BaseLLM):
                 hard_filters["year_founded_after"] = None
                 hard_filters["year_founded_before"] = None
 
-        if isinstance(hard_filters.get("location"), list):
-            if len(hard_filters["location"]) > 0:
-                hard_filters["location"] = hard_filters["location"][0]
-            else:
-                hard_filters["location"] = None
+        for loc_key in ["location", "exclude_location"]:
+            loc_val = hard_filters.get(loc_key)
+            if isinstance(loc_val, list):
+                if len(loc_val) > 0:
+                    hard_filters[loc_key] = loc_val[0]
+                else:
+                    hard_filters[loc_key] = None
+            elif isinstance(loc_val, dict):
+                logging.warning(f"LLM made a dictionary for {loc_key}. Clearing it.")
+                hard_filters[loc_key] = None
 
         parsed_json["hard_filters"] = hard_filters
         return parsed_json
@@ -338,14 +346,38 @@ class CompaniesFilter:
             ]
 
 
-        # Filter by Location
+        # Filter by Location (Basic string/dict matching)
         if hard_filters.get("location") is not None:
             target_loc = str(hard_filters["location"]).lower()
-            # Keep if missing, OR if the target location string is inside the company's address string
-            filtered_df = filtered_df[
-                filtered_df['address'].isna() |
-                filtered_df['address'].astype(str).str.lower().str.contains(target_loc, na=False)
-            ]
+
+            def match_location(address_val):
+                if pd.isna(address_val): return True # Keep missing data
+                if isinstance(address_val, dict):
+                    # Check if the exact target equals the country code, OR is inside any other value (like town/region)
+                    country_match = str(address_val.get("country_code", "")).lower() == target_loc
+                    other_match = any(target_loc in str(v).lower() for k, v in address_val.items() if k != "country_code")
+                    return country_match or other_match
+                return target_loc in str(address_val).lower()
+
+            filtered_df = filtered_df[filtered_df['address'].apply(match_location)]
+
+        # Filter by Negative Location (Exclude)
+        if hard_filters.get("exclude_location") is not None:
+            exclude_loc = str(hard_filters["exclude_location"]).lower()
+
+            def exclude_match_location(address_val):
+                if pd.isna(address_val): return True # Keep missing data
+                if isinstance(address_val, dict):
+                    # If the exact target equals the country code, we REJECT it
+                    if str(address_val.get("country_code", "")).lower() == exclude_loc:
+                        return False
+                    # If the target is found in the town/region, we REJECT it
+                    if any(exclude_loc in str(v).lower() for k, v in address_val.items() if k != "country_code"):
+                        return False
+                    return True
+                return exclude_loc not in str(address_val).lower()
+
+            filtered_df = filtered_df[filtered_df['address'].apply(exclude_match_location)]
 
         return filtered_df
 
