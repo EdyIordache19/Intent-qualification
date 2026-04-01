@@ -1,0 +1,11 @@
+# Data Processing
+pandas
+numpy
+
+# Machine Learning & Embeddings
+sentence-transformers
+scikit-learn
+
+# LLM Providers
+ollama
+groq
