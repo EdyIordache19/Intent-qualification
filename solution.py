@@ -1,51 +1,59 @@
 import os
-# Disable Hugging Face progress bars and symlink warnings
+import sys
+import io
+import json
+import re
+import ast
+import contextlib
+import concurrent.futures
+import argparse
+import logging
+import warnings
+
+# ==========================================
+# 1. ENVIRONMENT CONFIGURATION
+# Must be set BEFORE importing Hugging Face libraries
+# ==========================================
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
-# CORRECTED: Import the logging module directly from huggingface_hub.utils
-from huggingface_hub.utils import logging as hf_hub_logging
-hf_hub_logging.set_verbosity_error()
-
-# Silence the transformers logger
-from transformers import logging as transformers_logging
-transformers_logging.set_verbosity_error()
-
-import ollama
-import json
-import re
+# ==========================================
+# 2. THIRD-PARTY LIBRARIES
+# ==========================================
 import numpy as np
 import pandas as pd
-import ast
-import concurrent.futures
 import groq
-import argparse
+import ollama
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+from huggingface_hub.utils import logging as hf_hub_logging
+from transformers import logging as transformers_logging
 
-import logging
+# ==========================================
+# 3. GLOBAL LOGGING & WARNING SUPPRESSION
+# ==========================================
+# Configure the root logger for the application
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+# Silence overly verbose third-party loggers
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 logging.getLogger("transformers").setLevel(logging.ERROR)
+hf_hub_logging.set_verbosity_error()
+transformers_logging.set_verbosity_error()
 
-import warnings
+# Suppress expected deprecation and unauthenticated warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
-
-import io
-import contextlib
-import sys
 
 def clean_json(raw_output: str) -> str:
     logging.info("Cleaning the output")
