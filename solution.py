@@ -558,7 +558,8 @@ class SearchEngine:
     def __init__(self, companies_df: pd.DataFrame, mode: str = "local", model_name: str = "llama3"):
         logging.info(f"Initializing SearchEngine | Mode: {mode.upper()} | Model: {model_name}")
 
-        self.companies_df = companies_df
+        clean_df = companies_df.drop_duplicates(subset=['operational_name'])
+        self.companies_df = clean_df
         self.parser = QueryParser(model=model_name, mode=mode)
         self.filter = CompaniesFilter(companies_df)
         self.searcher = Searcher()
