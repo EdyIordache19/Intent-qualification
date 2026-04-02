@@ -77,6 +77,7 @@ def clean_query(raw_query: str) -> str:
     return cleaned
 
 class BaseLLM:
+    """ Base class inherited by the other classes that use LLMs for respecting DRY principles and OOP """
     def __init__(self, model: str = "llama3", mode: str = "local"):
         self.model = model
         self.mode = mode
@@ -146,6 +147,7 @@ class BaseLLM:
             sys.exit(1)
 
 class QueryParser(BaseLLM):
+    """ Class responsible for parsing the user query through a LLM and generating a JSON with hard filters and soft filters """
     def __init__(self, model: str = "llama3", mode: str = "local"):
         logging.info(f"Initializing the QueryParser with the {model} model")
         super().__init__(model=model, mode=mode)
@@ -307,6 +309,7 @@ class QueryParser(BaseLLM):
         print(json.dumps(json_query, indent = 2))
 
 class CompaniesFilter:
+    """ Filters the companies based on the hard filters extracted beforehand """
     def __init__(self, df):
         logging.info("Initializing CompaniesFilter")
         self.df = df
@@ -390,6 +393,7 @@ class CompaniesFilter:
         return filtered_df
 
 class Searcher:
+    """ Uses embeddings and cosine similarity to rank the filtered companies """
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.model = SentenceTransformer(model_name)
@@ -461,6 +465,7 @@ class Searcher:
         return ranked_companies.head(top_k)
 
 class IntentValidator(BaseLLM):
+    """ Heavy LLM class that validates each of the remaining companies based on the initial query """
     def __init__(self, model: str = "llama3", mode: str = "local"):
         logging.info(f"Initializing IntentValidator with {model} model")
         super().__init__(model=model, mode=mode)
@@ -543,6 +548,7 @@ class IntentValidator(BaseLLM):
 
 
 class SearchEngine:
+    """ Orchestrator class that initializes all the other components and runs the engine """
     def __init__(self, companies_df: pd.DataFrame, mode: str = "local", model_name: str = "llama3"):
         logging.info(f"Initializing SearchEngine | Mode: {mode.upper()} | Model: {model_name}")
 
