@@ -111,6 +111,7 @@ class BaseLLM:
                 ],
                 model=self.model,
                 temperature=0.0,
+                max_tokens = 1024,
                 response_format={"type": "json_object"}
             )
 
@@ -158,7 +159,7 @@ class QueryParser(BaseLLM):
             3. You MUST start your response with a `_reasoning` key, briefly explaining how you map the numbers based on the comparators.
             4. Start your response immediately with `{`. No markdown formatting outside the JSON.
             5. Convert abbreviations like "M" (millions) or "B" (billions) to full integers (e.g., 10M -> 10000000, 2B -> 2000000000).
-            6. For `location` and `exclude_location`: If the user mentions a country, you MUST convert it to its 2-letter lowercase ISO country code (e.g., "Spain" -> "es", "United States" -> "us", "Brazil" -> "br"). If it is a city or region, leave it as is.
+            6. For `location` and `exclude_location`: If the user mentions a specific country, you MUST convert it to its 2-letter lowercase ISO country code (e.g., "Spain" -> "es"). If the user mentions a continent or broad region (e.g., "Europe", "Scandinavia", "Asia"), you MUST set the location to `null` so it does not break the deterministic filter.
 
             Use EXACTLY this JSON structure:
             {
@@ -483,9 +484,14 @@ class IntentValidator(BaseLLM):
     def validate_company(self, query: str, company: pd.Series) -> dict:
         company_name = company.get('operational_name', 'Unknown')
         logging.info(f"Validating intent for: {company_name}")
+
+        # Truncate description for tokens limit
+        raw_desc = str(company.get("description"))
+        truncated_desc = raw_desc[:2000] + "..." if len(raw_desc) > 2000 else raw_desc
+
         company_data = {
             "name": company.get("operational_name"),
-            "description": company.get("description"),
+            "description": truncated_desc,
             "core_offerings": company.get("core_offerings"),
             "business_model": company.get("business_model"),
             "industry": company.get("primary_naics", {}).get("label") if isinstance(company.get("primary_naics"), dict) else None
