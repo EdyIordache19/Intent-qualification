@@ -1,2 +1,12 @@
+# Ignore generated JSON/JSONL outputs
 *.json
 *.jsonl
+
+# EXCEPTION: Do not ignore the actual dataset
+!companies.jsonl
+
+# Ignore generated Numpy matrix
+*.npy
+
+# Ignore Python cache
+__pycache__/

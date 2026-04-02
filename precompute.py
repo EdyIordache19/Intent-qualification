@@ -52,6 +52,8 @@ def compute_embeddings():
 
     return companies_embeddings
 
-
-companies_embeddings = compute_embeddings()
-np.save("companies_embeddings.npy", companies_embeddings)
+if __name__ == "__main__":
+    print("Computing embeddings...")
+    companies_embeddings = compute_embeddings()
+    np.save("companies_embeddings.npy", companies_embeddings)
+    print("Embeddings computed, saved to companies_embeddings.npy")

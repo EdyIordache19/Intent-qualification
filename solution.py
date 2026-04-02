@@ -577,15 +577,12 @@ class SearchEngine:
         # Filter based on JSON query
         filtered_companies = self.filter.apply_filters(json_query["hard_filters"])
         logging.info(f"Reduced dataset from {len(self.companies_df)} to {len(filtered_companies)} companies.")
-        # filtered_companies.to_json('filtered_companies.jsonl', orient='records', lines=True)
 
         # Rank top k companies based on embeddings
         ranked_companies = self.searcher.rank_companies(filtered_companies, query, top_k)
-        # print(ranked_companies)
 
         # Validate companies
         validated_companies = self.validator.validate_and_filter_companies(ranked_companies, query)
-        # validated_companies.to_json('validated_companies.jsonl', orient='records', lines=True)
 
         return validated_companies
 
